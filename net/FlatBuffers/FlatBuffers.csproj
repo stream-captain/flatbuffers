@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFrameworks>net6.0</TargetFrameworks>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <BaseOutputPath>$(STREAMXBINPATH)\FlatBuffers\bin\</BaseOutputPath>
-    <BaseIntermediateOutputPath>$(STREAMXBINPATH)\FlatBuffers\obj\</BaseIntermediateOutputPath>
+    <BaseOutputPath>..\..\..\..\bin\FlatBuffers\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>..\..\..\..\bin\FlatBuffers\obj\</BaseIntermediateOutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(UNSAFE_BYTEBUFFER)' == 'true'">
