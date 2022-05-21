@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFrameworks>net6.0</TargetFrameworks>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <BaseOutputPath>..\..\..\..\bin\FlatBuffers\bin\</BaseOutputPath>
-    <BaseIntermediateOutputPath>..\..\..\..\bin\FlatBuffers\obj\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildProjectDirectory)..\..\..\..\..\bin\FlatBuffers\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildProjectDirectory)..\..\..\..\..\bin\FlatBuffers\obj\</BaseIntermediateOutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(UNSAFE_BYTEBUFFER)' == 'true'">
@@ -20,6 +20,12 @@
 
   <ItemGroup Condition="('$(ENABLE_SPAN_T)' == 'true') And (('$(TargetFramework)' == 'netstandard2.0') Or ('$(TargetFramework)' == 'net6.0'))">
     <PackageReference Include="System.Memory" Version="4.5.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Directory.Build.props">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
