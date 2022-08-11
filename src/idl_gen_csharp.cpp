@@ -935,7 +935,7 @@ class CSharpGenerator : public BaseGenerator {
               code += "  public " + qualified_name + "? ";
               code += Name(field) + "ByKey(";
               code += GenTypeGet(key_field.value.type) + " key";
-              if (IsString(key_field.value.type)) { 
+              if (IsString(key_field.value.type)) {
                 code += ", byte[] tmpBuffer = null";
               }
               code += ")";
@@ -943,7 +943,7 @@ class CSharpGenerator : public BaseGenerator {
               code += qualified_name + ".__lookup_by_key(";
               code += "__p.__vector(o), key, ";
               if (IsString(key_field.value.type)) { 
-                code += "tmpBuffer, ";
+                code += "tmpBuffer, "; 
               }
               code += "__p.bb) : null; ";
               code += "}\n";
@@ -1340,9 +1340,7 @@ class CSharpGenerator : public BaseGenerator {
       code += "int vectorLocation, ";
       code += GenTypeGet(key_field->value.type);
       code += " key, ";
-      if (IsString(key_field->value.type)) {
-        code += "byte[] byteKey, "; 
-      }
+      if (IsString(key_field->value.type)) { code += "byte[] byteKey, "; }
       code += "ByteBuffer bb) {\n";
       if (IsString(key_field->value.type)) {
         code += "    int keyLen;\n";
