@@ -936,14 +936,14 @@ class CSharpGenerator : public BaseGenerator {
               code += Name(field) + "ByKey(";
               code += GenTypeGet(key_field.value.type) + " key";
               if (IsString(key_field.value.type)) {
-                code += ", byte[] tmpBuffer = null";
+                code += ", byte[] keyBuffer = null";
               }
               code += ")";
               code += offset_prefix;
               code += qualified_name + ".__lookup_by_key(";
               code += "__p.__vector(o), key, ";
               if (IsString(key_field.value.type)) { 
-                code += "tmpBuffer, "; 
+                code += "keyBuffer, "; 
               }
               code += "__p.bb) : null; ";
               code += "}\n";
