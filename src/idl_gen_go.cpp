@@ -61,7 +61,7 @@ Namer::Config GoDefaultConfig() {
            /*variables=*/Case::kLowerCamel,
            /*variants=*/Case::kKeep,
            /*enum_variant_seperator=*/"",  // I.e. Concatenate.
-           /*escape_keywords=*/Namer::Config::Escape::BeforeConvertingCase,
+           /*escape_keywords=*/Namer::Config::Escape::AfterConvertingCase,
            /*namespaces=*/Case::kKeep,
            /*namespace_seperator=*/"__",
            /*object_prefix=*/"",
@@ -842,7 +842,8 @@ class GoGenerator : public BaseGenerator {
         continue;
       code += "\t" + namer_.Field(field) + " ";
       if (field.IsScalarOptional()) { code += "*"; }
-      code += NativeType(field.value.type) + "\n";
+      code += NativeType(field.value.type) + " `json:\"" + field.name + "\"`" +
+              "\n";
     }
     code += "}\n\n";
 
@@ -1357,8 +1358,10 @@ class GoGenerator : public BaseGenerator {
     while (code.length() > 2 && code.substr(code.length() - 2) == "\n\n") {
       code.pop_back();
     }
-    std::string filename =
-        namer_.Directories(ns) + namer_.File(def, SkipFile::Suffix);
+    std::string directory = namer_.Directories(ns);
+    std::string file = namer_.File(def, SkipFile::Suffix);
+    EnsureDirExists(directory);
+    std::string filename = directory + file;
     return SaveFile(filename.c_str(), code, false);
   }
 

@@ -177,6 +177,10 @@ class TsGenerator : public BaseGenerator {
   // This maps from import names to types to import.
   std::map<std::string, std::map<std::string, std::string>>
       flat_file_import_declarations_;
+  // For flat file codegen, tracks whether we need to import the flatbuffers
+  // library itself (not necessary for files that solely consist of enum
+  // definitions).
+  bool import_flatbuffers_lib_ = false;
 
   // Generate code for all enums.
   void generateEnums() {
@@ -200,6 +204,7 @@ class TsGenerator : public BaseGenerator {
       import_set bare_imports;
       import_set imports;
       AddImport(bare_imports, "* as flatbuffers", "flatbuffers");
+      import_flatbuffers_lib_ = true;
       auto &struct_def = **it;
       std::string declcode;
       GenStruct(parser_, struct_def, &declcode, imports);
@@ -212,7 +217,9 @@ class TsGenerator : public BaseGenerator {
   void generateEntry() {
     std::string code;
     if (parser_.opts.ts_flat_file) {
-      code += "import * as flatbuffers from 'flatbuffers';\n";
+      if (import_flatbuffers_lib_) {
+        code += "import * as flatbuffers from 'flatbuffers';\n";
+      }
       for (const auto &it : flat_file_import_declarations_) {
         // Note that we do end up generating an import for ourselves, which
         // should generally be harmless.
@@ -227,7 +234,7 @@ class TsGenerator : public BaseGenerator {
         std::string basename = flatbuffers::StripPath(noext);
         std::string include_file = GeneratedFileName(
             parser_.opts.include_prefix,
-            parser_.opts.keep_include_path ? noext : basename, parser_.opts);
+            parser_.opts.keep_prefix ? noext : basename, parser_.opts);
         // TODO: what is the right behavior when different include flags are
         // specified here? Should we always be adding the "./" for a relative
         // path or turn it off if --include-prefix is specified, or something
@@ -635,15 +642,29 @@ class TsGenerator : public BaseGenerator {
     }
 
     if (parser_.opts.ts_flat_file) {
-      std::string file = dependency.declaration_file == nullptr
-                                   ? dependency.file
-                                   : dependency.declaration_file->substr(2);
-      file = RelativeToRootPath(StripFileName(AbsolutePath(dependent.file)),
-                                dependency.file).substr(2);
-      long_import_name = ns + import_name;
-      flat_file_import_declarations_[file][import_name] = long_import_name;
-      if (parser_.opts.generate_object_based_api) {
-        flat_file_import_declarations_[file][import_name + "T"] = long_import_name + "T";
+      // In flat-file generation, do not attempt to import things from ourselves
+      // *and* do not wrap namespaces (note that this does override the logic
+      // above, but since we force all non-self-imports to use namespace-based
+      // names in flat file generation, it's fine).
+      if (dependent.file == dependency.file) {
+        // Should already be caught elsewhere, but if we ever try to get flat
+        // file generation and --gen-all working concurrently, then we'll need
+        // to update this import logic.
+        FLATBUFFERS_ASSERT(!parser_.opts.generate_all);
+        long_import_name = import_name;
+      } else {
+        long_import_name = ns + import_name;
+        std::string file = dependency.declaration_file == nullptr
+                               ? dependency.file
+                               : dependency.declaration_file->substr(2);
+        file = RelativeToRootPath(StripFileName(AbsolutePath(dependent.file)),
+                                  dependency.file)
+                   .substr(2);
+        flat_file_import_declarations_[file][import_name] = long_import_name;
+        if (parser_.opts.generate_object_based_api) {
+          flat_file_import_declarations_[file][import_name + "T"] =
+              long_import_name + "T";
+        }
       }
     }
 
@@ -715,13 +736,26 @@ class TsGenerator : public BaseGenerator {
     }
 
     if (parser_.opts.ts_flat_file) {
-      std::string file = dependency.declaration_file == nullptr
-                                   ? dependency.file
-                                   : dependency.declaration_file->substr(2);
-      file = RelativeToRootPath(StripFileName(AbsolutePath(dependent.file)),
-                                dependency.file).substr(2);
-      long_import_name = ns + import_name;
-      flat_file_import_declarations_[file][import_name] = long_import_name;
+      // In flat-file generation, do not attempt to import things from ourselves
+      // *and* do not wrap namespaces (note that this does override the logic
+      // above, but since we force all non-self-imports to use namespace-based
+      // names in flat file generation, it's fine).
+      if (dependent.file == dependency.file) {
+        // Should already be caught elsewhere, but if we ever try to get flat
+        // file generation and --gen-all working concurrently, then we'll need
+        // to update this import logic.
+        FLATBUFFERS_ASSERT(!parser_.opts.generate_all);
+        long_import_name = import_name;
+      } else {
+        long_import_name = ns + import_name;
+        std::string file = dependency.declaration_file == nullptr
+                               ? dependency.file
+                               : dependency.declaration_file->substr(2);
+        file = RelativeToRootPath(StripFileName(AbsolutePath(dependent.file)),
+                                  dependency.file)
+                   .substr(2);
+        flat_file_import_declarations_[file][import_name] = long_import_name;
+      }
     }
 
     std::string import_statement;
@@ -777,7 +811,9 @@ class TsGenerator : public BaseGenerator {
   }
 
   // Generate a TS union type based on a union's enum
-  std::string GenObjApiUnionTypeTS(import_set &imports, const IDLOptions &opts,
+  std::string GenObjApiUnionTypeTS(import_set &imports,
+                                   const StructDef &dependent,
+                                   const IDLOptions &opts,
                                    const EnumDef &union_enum) {
     std::string ret = "";
     std::set<std::string> type_list;
@@ -792,7 +828,7 @@ class TsGenerator : public BaseGenerator {
         type = "string";  // no need to wrap string type in namespace
       } else if (ev.union_type.base_type == BASE_TYPE_STRUCT) {
         type = GetObjApiClassName(
-            AddImport(imports, union_enum, *ev.union_type.struct_def), opts);
+            AddImport(imports, dependent, *ev.union_type.struct_def), opts);
       } else {
         FLATBUFFERS_ASSERT(false);
       }
@@ -879,12 +915,13 @@ class TsGenerator : public BaseGenerator {
   // Used for generating a short function that returns the correct class
   // based on union enum type. Assume the context is inside the non object api
   // type
-  std::string GenUnionValTS(import_set &imports, const std::string &field_name,
+  std::string GenUnionValTS(import_set &imports, const StructDef &dependent,
+                            const std::string &field_name,
                             const Type &union_type,
                             const bool is_array = false) {
     if (union_type.enum_def) {
       const auto &enum_def = *union_type.enum_def;
-      const auto enum_type = AddImport(imports, enum_def, enum_def);
+      const auto enum_type = AddImport(imports, dependent, enum_def);
       const std::string union_accessor = "this." + field_name;
 
       const auto union_has_string = UnionHasStringType(enum_def);
@@ -968,7 +1005,7 @@ class TsGenerator : public BaseGenerator {
       } else {
         if (nullCheck) {
           std::string nullValue = "0";
-          if (field.value.type.base_type == BASE_TYPE_BOOL) { 
+          if (field.value.type.base_type == BASE_TYPE_BOOL) {
             nullValue = "false";
           }
           ret += "(" + curr_member_accessor + " ?? " + nullValue + ")";
@@ -1143,11 +1180,11 @@ class TsGenerator : public BaseGenerator {
               }
 
               case BASE_TYPE_UNION: {
-                field_type += GenObjApiUnionTypeTS(imports, parser.opts,
-                                                   *(vectortype.enum_def));
+                field_type += GenObjApiUnionTypeTS(
+                    imports, struct_def, parser.opts, *(vectortype.enum_def));
                 field_type += ")[]";
-                field_val =
-                    GenUnionValTS(imports, field_name, vectortype, true);
+                field_val = GenUnionValTS(imports, struct_def, field_name,
+                                          vectortype, true);
 
                 field_offset_decl =
                     EscapeKeyword(AddImport(imports, struct_def, struct_def)) +
@@ -1182,10 +1219,11 @@ class TsGenerator : public BaseGenerator {
           }
 
           case BASE_TYPE_UNION: {
-            field_type += GenObjApiUnionTypeTS(imports, parser.opts,
+            field_type += GenObjApiUnionTypeTS(imports, struct_def, parser.opts,
                                                *(field.value.type.enum_def));
 
-            field_val = GenUnionValTS(imports, field_name, field.value.type);
+            field_val = GenUnionValTS(imports, struct_def, field_name,
+                                      field.value.type);
             field_offset_decl =
                 "builder.createObjectOffset(this." + field_name_escaped + ")";
             break;

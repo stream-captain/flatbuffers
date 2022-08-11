@@ -1335,10 +1335,18 @@ CheckedError Parser::ParseTable(const StructDef &struct_def, std::string *value,
                 ECHECK(atot(field_value.constant.c_str(), *this, &val)); \
                 builder_.PushElement(val); \
               } else { \
-                CTYPE val, valdef; \
-                ECHECK(atot(field_value.constant.c_str(), *this, &val)); \
-                ECHECK(atot(field->value.constant.c_str(), *this, &valdef)); \
-                builder_.AddElement(field_value.offset, val, valdef); \
+                if (field->IsScalarOptional()) { \
+                  if (field_value.constant != "null") { \
+                    CTYPE val; \
+                    ECHECK(atot(field_value.constant.c_str(), *this, &val)); \
+                    builder_.AddElement(field_value.offset, val); \
+                  } \
+                } else { \
+                  CTYPE val, valdef; \
+                  ECHECK(atot(field_value.constant.c_str(), *this, &val)); \
+                  ECHECK(atot(field->value.constant.c_str(), *this, &valdef)); \
+                  builder_.AddElement(field_value.offset, val, valdef); \
+                } \
               } \
               break;
             FLATBUFFERS_GEN_TYPES_SCALAR(FLATBUFFERS_TD)
@@ -2189,12 +2197,8 @@ template<typename T> void EnumDef::ChangeEnumValue(EnumVal *ev, T new_value) {
 }
 
 namespace EnumHelper {
-template<BaseType E> struct EnumValType {
-  typedef int64_t type;
-};
-template<> struct EnumValType<BASE_TYPE_ULONG> {
-  typedef uint64_t type;
-};
+template<BaseType E> struct EnumValType { typedef int64_t type; };
+template<> struct EnumValType<BASE_TYPE_ULONG> { typedef uint64_t type; };
 }  // namespace EnumHelper
 
 struct EnumValBuilder {
@@ -2464,12 +2468,19 @@ CheckedError Parser::CheckClash(std::vector<FieldDef *> &fields,
   return NoError();
 }
 
+std::vector<std::string> Parser::GetIncludedFiles() const {
+  const auto it = files_included_per_file_.find(file_being_parsed_);
+  if (it == files_included_per_file_.end()) { return {}; }
+
+  return { it->second.cbegin(), it->second.cend() };
+}
+
 bool Parser::SupportsOptionalScalars(const flatbuffers::IDLOptions &opts) {
   static FLATBUFFERS_CONSTEXPR unsigned long supported_langs =
       IDLOptions::kRust | IDLOptions::kSwift | IDLOptions::kLobster |
       IDLOptions::kKotlin | IDLOptions::kCpp | IDLOptions::kJava |
       IDLOptions::kCSharp | IDLOptions::kTs | IDLOptions::kBinary |
-      IDLOptions::kGo;
+      IDLOptions::kGo | IDLOptions::kPython | IDLOptions::kJson;
   unsigned long langs = opts.lang_to_generate;
   return (langs > 0 && langs < IDLOptions::kMAX) && !(langs & ~supported_langs);
 }
@@ -3266,16 +3277,75 @@ CheckedError Parser::ParseRoot(const char *source, const char **include_paths,
       for (auto val_it = enum_def.Vals().begin();
            val_it != enum_def.Vals().end(); ++val_it) {
         auto &val = **val_it;
+
         if (!(opts.lang_to_generate != 0 && SupportsAdvancedUnionFeatures()) &&
             (IsStruct(val.union_type) || IsString(val.union_type)))
+
           return Error(
               "only tables can be union elements in the generated language: " +
               val.name);
       }
     }
   }
+
+  auto err = CheckPrivateLeak();
+  if (err.Check()) return err;
+
   // Parse JSON object only if the scheme has been parsed.
   if (token_ == '{') { ECHECK(DoParseJson()); }
+  return NoError();
+}
+
+CheckedError Parser::CheckPrivateLeak() {
+  if (!opts.no_leak_private_annotations) return NoError();
+  // Iterate over all structs/tables to validate we arent leaking
+  // any private (structs/tables/enums)
+  for (auto it = structs_.vec.begin(); it != structs_.vec.end(); it++) {
+    auto &struct_def = **it;
+    for (auto fld_it = struct_def.fields.vec.begin();
+         fld_it != struct_def.fields.vec.end(); ++fld_it) {
+      auto &field = **fld_it;
+
+      if (field.value.type.enum_def) {
+        auto err =
+            CheckPrivatelyLeakedFields(struct_def, *field.value.type.enum_def);
+        if (err.Check()) { return err; }
+      } else if (field.value.type.struct_def) {
+        auto err = CheckPrivatelyLeakedFields(struct_def,
+                                              *field.value.type.struct_def);
+        if (err.Check()) { return err; }
+      }
+    }
+  }
+  // Iterate over all enums to validate we arent leaking
+  // any private (structs/tables)
+  for (auto it = enums_.vec.begin(); it != enums_.vec.end(); ++it) {
+    auto &enum_def = **it;
+    if (enum_def.is_union) {
+      for (auto val_it = enum_def.Vals().begin();
+           val_it != enum_def.Vals().end(); ++val_it) {
+        auto &val = **val_it;
+        if (val.union_type.struct_def) {
+          auto err =
+              CheckPrivatelyLeakedFields(enum_def, *val.union_type.struct_def);
+          if (err.Check()) { return err; }
+        }
+      }
+    }
+  }
+  return NoError();
+}
+
+CheckedError Parser::CheckPrivatelyLeakedFields(const Definition &def,
+                                                const Definition &value_type) {
+  if (!opts.no_leak_private_annotations) return NoError();
+  const auto is_private = def.attributes.Lookup("private");
+  const auto is_field_private = value_type.attributes.Lookup("private");
+  if (!is_private && is_field_private) {
+    return Error(
+        "Leaking private implementation, verify all objects have similar "
+        "annotations");
+  }
   return NoError();
 }
 

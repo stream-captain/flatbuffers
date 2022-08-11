@@ -221,33 +221,41 @@ class CppGenerator : public BaseGenerator {
   }
 
   void GenIncludeDependencies() {
-    int num_includes = 0;
     if (opts_.generate_object_based_api) {
       for (auto it = parser_.native_included_files_.begin();
            it != parser_.native_included_files_.end(); ++it) {
         code_ += "#include \"" + *it + "\"";
-        num_includes++;
       }
     }
 
-    std::vector<std::string> include_files;
-    for (auto it = parser_.included_files_.begin();
-         it != parser_.included_files_.end(); ++it) {
-      if (it->second.empty()) continue;
-      include_files.push_back(it->second);
-    }
-    std::stable_sort(include_files.begin(), include_files.end());
+    // Get the directly included file of the file being parsed.
+    std::vector<std::string> included_files(parser_.GetIncludedFiles());
 
-    for (auto it = include_files.begin(); it != include_files.end(); ++it) {
-      auto noext = flatbuffers::StripExtension(*it);
-      auto basename = flatbuffers::StripPath(noext);
-      auto includeName =
-          GeneratedFileName(opts_.include_prefix,
-                            opts_.keep_include_path ? noext : basename, opts_);
-      code_ += "#include \"" + includeName + "\"";
-      num_includes++;
+    // We are safe to sort them alphabetically, since there shouldn't be any
+    // interdependence between them.
+    std::stable_sort(included_files.begin(), included_files.end());
+
+    // Get any prefix of the file being parsed, so that included filed can be
+    // properly stripped.
+    auto prefix = flatbuffers::StripFileName(parser_.file_being_parsed_) +
+                  flatbuffers::kPathSeparator;
+
+    for (const std::string &included_file : included_files) {
+      auto file_without_extension = flatbuffers::StripExtension(included_file);
+      code_ +=
+          "#include \"" +
+          GeneratedFileName(
+              opts_.include_prefix,
+              opts_.keep_prefix
+                  ? flatbuffers::StripPrefix(file_without_extension, prefix)
+                  : flatbuffers::StripPath(file_without_extension),
+              opts_) +
+          "\"";
     }
-    if (num_includes) code_ += "";
+
+    if (!parser_.native_included_files_.empty() || !included_files.empty()) {
+      code_ += "";
+    }
   }
 
   void GenExtraIncludes() {
@@ -2053,19 +2061,41 @@ class CppGenerator : public BaseGenerator {
     for (auto it = struct_def.fields.vec.begin();
          it != struct_def.fields.vec.end(); ++it) {
       const auto &field = **it;
+      const auto accessor = Name(field) + accessSuffix;
+      const auto lhs_accessor = "lhs." + accessor;
+      const auto rhs_accessor = "rhs." + accessor;
+
       if (!field.deprecated &&  // Deprecated fields won't be accessible.
           field.value.type.base_type != BASE_TYPE_UTYPE &&
           (field.value.type.base_type != BASE_TYPE_VECTOR ||
            field.value.type.element != BASE_TYPE_UTYPE)) {
         if (!compare_op.empty()) { compare_op += " &&\n      "; }
-        auto accessor = Name(field) + accessSuffix;
         if (struct_def.fixed || field.native_inline ||
             field.value.type.base_type != BASE_TYPE_STRUCT) {
-          compare_op += "(lhs." + accessor + " == rhs." + accessor + ")";
+          // If the field is a vector of tables, the table need to be compared
+          // by value, instead of by the default unique_ptr == operator which
+          // compares by address.
+          if (field.value.type.base_type == BASE_TYPE_VECTOR &&
+              field.value.type.element == BASE_TYPE_STRUCT &&
+              !field.value.type.struct_def->fixed) {
+            const auto type =
+                GenTypeNative(field.value.type.VectorType(), true, field);
+            const auto equal_length =
+                lhs_accessor + ".size() == " + rhs_accessor + ".size()";
+            const auto elements_equal =
+                "std::equal(" + lhs_accessor + ".cbegin(), " + lhs_accessor +
+                ".cend(), " + rhs_accessor + ".cbegin(), [](" + type +
+                " const &a, " + type +
+                " const &b) { return (a == b) || (a && b && *a == *b); })";
+
+            compare_op += "(" + equal_length + " && " + elements_equal + ")";
+          } else {
+            compare_op += "(" + lhs_accessor + " == " + rhs_accessor + ")";
+          }
         } else {
           // Deep compare of std::unique_ptr. Null is not equal to empty.
           std::string both_null =
-              "(lhs." + accessor + " == rhs." + accessor + ")";
+              "(" + lhs_accessor + " == " + rhs_accessor + ")";
           std::string not_null_and_equal = "(lhs." + accessor + " && rhs." +
                                            accessor + " && *lhs." + accessor +
                                            " == *rhs." + accessor + ")";
@@ -3291,7 +3321,7 @@ class CppGenerator : public BaseGenerator {
           } else if (field.native_inline) {
             code += "&" + value;
           } else {
-            code += value + " ? " + value + GenPtrGet(field) + " : 0";
+            code += value + " ? " + value + GenPtrGet(field) + " : nullptr";
           }
         } else {
           // _o->field ? CreateT(_fbb, _o->field.get(), _rehasher);
