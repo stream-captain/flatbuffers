@@ -16,12 +16,14 @@
 #include <stdint.h>
 
 #include <cmath>
+#include <memory>
 #include <string>
 
 #include "flatbuffers/flatbuffers.h"
 #include "flatbuffers/idl.h"
 #include "flatbuffers/minireflect.h"
 #include "flatbuffers/registry.h"
+#include "flatbuffers/stl_emulation.h"
 #include "flatbuffers/util.h"
 #include "monster_test_generated.h"
 #include "namespace_test/namespace_test1_generated.h"
@@ -623,7 +625,7 @@ void SizePrefixedTest() {
   // Create size prefixed buffer.
   flatbuffers::FlatBufferBuilder fbb;
   FinishSizePrefixedMonsterBuffer(
-      fbb, CreateMonster(fbb, 0, 200, 300, fbb.CreateString("bob")));
+      fbb, CreateMonster(fbb, nullptr, 200, 300, fbb.CreateString("bob")));
 
   // Verify it.
   flatbuffers::Verifier verifier(fbb.GetBufferPointer(), fbb.GetSize());
@@ -717,6 +719,47 @@ void JsonEnumsTest() {
   result = GenerateText(parser, builder.GetBufferPointer(), &future_json);
   TEST_EQ(result, true);
   TEST_EQ(std::string::npos != future_json.find("color: 13"), true);
+}
+
+void JsonOptionalTest(bool default_scalars) {
+  // load FlatBuffer schema (.fbs) and JSON from disk
+  std::string schemafile;
+  std::string jsonfile;
+  TEST_EQ(
+      flatbuffers::LoadFile((test_data_path + "optional_scalars.fbs").c_str(),
+                            false, &schemafile),
+      true);
+  TEST_EQ(flatbuffers::LoadFile((test_data_path + "optional_scalars" +
+                                 (default_scalars ? "_defaults" : "") + ".json")
+                                    .c_str(),
+                                false, &jsonfile),
+          true);
+
+  auto include_test_path =
+      flatbuffers::ConCatPathFileName(test_data_path, "include_test");
+  const char *include_directories[] = { test_data_path.c_str(),
+                                        include_test_path.c_str(), nullptr };
+
+  // parse schema first, so we can use it to parse the data after
+  flatbuffers::Parser parser;
+  parser.opts.output_default_scalars_in_json = default_scalars;
+  TEST_EQ(parser.Parse(schemafile.c_str(), include_directories), true);
+  TEST_EQ(parser.ParseJson(jsonfile.c_str()), true);
+
+  // here, parser.builder_ contains a binary buffer that is the parsed data.
+
+  // First, verify it, just in case:
+  flatbuffers::Verifier verifier(parser.builder_.GetBufferPointer(),
+                                 parser.builder_.GetSize());
+  TEST_EQ(optional_scalars::VerifyScalarStuffBuffer(verifier), true);
+
+  // to ensure it is correct, we now generate text back from the binary,
+  // and compare the two:
+  std::string jsongen;
+  auto result =
+      GenerateText(parser, parser.builder_.GetBufferPointer(), &jsongen);
+  TEST_EQ(result, true);
+  TEST_EQ_STR(jsongen.c_str(), jsonfile.c_str());
 }
 
 #if defined(FLATBUFFERS_HAS_NEW_STRTOD) && (FLATBUFFERS_HAS_NEW_STRTOD > 0)
@@ -3263,6 +3306,24 @@ void FlexBuffersTest() {
   TEST_EQ(slb.GetSize(), 664);
 }
 
+void FlexBuffersReuseBugTest() {
+  flexbuffers::Builder slb;
+  slb.Map([&]() {
+    slb.Vector("vec", [&]() {});
+    slb.Bool("bool", true);
+  });
+  slb.Finish();
+  std::vector<uint8_t> reuse_tracker;
+  // This would fail before, since the reuse_tracker would use the address of
+  // the vector reference to check for reuse, but in this case we have an empty
+  // vector, and since the size field is before the pointer, its address is the
+  // same as thing after it, the key "bool".
+  // We fix this by using the address of the size field for tracking reuse.
+  TEST_EQ(flexbuffers::VerifyBuffer(slb.GetBuffer().data(),
+                                    slb.GetBuffer().size(), &reuse_tracker),
+          true);
+}
+
 void FlexBuffersFloatingPointTest() {
 #if defined(FLATBUFFERS_HAS_NEW_STRTOD) && (FLATBUFFERS_HAS_NEW_STRTOD > 0)
   flexbuffers::Builder slb(512,
@@ -3483,6 +3544,48 @@ void EqualOperatorTest() {
   b.test.type = Any_Monster;
   TEST_EQ(b == a, false);
   TEST_EQ(b != a, true);
+
+  // Test that vector of tables are compared by value and not by reference.
+  {
+    // Two tables are equal by default.
+    MonsterT a, b;
+    TEST_EQ(a == b, true);
+
+    // Adding only a table to one of the monster vectors should make it not
+    // equal (due to size mistmatch).
+    a.testarrayoftables.push_back(
+        flatbuffers::unique_ptr<MonsterT>(new MonsterT));
+    TEST_EQ(a == b, false);
+
+    // Adding an equalivant table to the other monster vector should make it
+    // equal again.
+    b.testarrayoftables.push_back(
+        flatbuffers::unique_ptr<MonsterT>(new MonsterT));
+    TEST_EQ(a == b, true);
+
+    // Create two new monsters that are different.
+    auto c = flatbuffers::unique_ptr<MonsterT>(new MonsterT);
+    auto d = flatbuffers::unique_ptr<MonsterT>(new MonsterT);
+    c->hp = 1;
+    d->hp = 2;
+    TEST_EQ(c == d, false);
+
+    // Adding them to the original monsters should also make them different.
+    a.testarrayoftables.push_back(std::move(c));
+    b.testarrayoftables.push_back(std::move(d));
+    TEST_EQ(a == b, false);
+
+    // Remove the mismatching monsters to get back to equality
+    a.testarrayoftables.pop_back();
+    b.testarrayoftables.pop_back();
+    TEST_EQ(a == b, true);
+
+    // Check that nullptr are OK.
+    a.testarrayoftables.push_back(nullptr);
+    b.testarrayoftables.push_back(
+        flatbuffers::unique_ptr<MonsterT>(new MonsterT));
+    TEST_EQ(a == b, false);
+  }
 }
 
 // For testing any binaries, e.g. from fuzzing.
@@ -3554,7 +3657,7 @@ void CreateSharedStringTest() {
   TEST_EQ((*a[6]) < (*a[5]), true);
 }
 
-#if !defined(FLATBUFFERS_SPAN_MINIMAL)
+#if !defined(FLATBUFFERS_USE_STD_SPAN) && !defined(FLATBUFFERS_SPAN_MINIMAL)
 void FlatbuffersSpanTest() {
   // Compile-time checking of non-const [] to const [] conversions.
   using flatbuffers::internal::is_span_convertable;
@@ -3941,11 +4044,11 @@ void FixedLengthArraySpanTest() {
     TEST_EQ(2, mutable_d_c.size());
     TEST_EQ(MyGame::Example::TestEnum::C, const_d_c[0]);
     TEST_EQ(MyGame::Example::TestEnum::B, const_d_c[1]);
-    TEST_ASSERT(mutable_d_c.end() == std::copy(const_d_c.cbegin(),
-                                               const_d_c.cend(),
+    TEST_ASSERT(mutable_d_c.end() == std::copy(const_d_c.begin(),
+                                               const_d_c.end(),
                                                mutable_d_c.begin()));
     TEST_ASSERT(
-        std::equal(const_d_c.cbegin(), const_d_c.cend(), mutable_d_c.cbegin()));
+        std::equal(const_d_c.begin(), const_d_c.end(), mutable_d_c.begin()));
   }
   // test little endian array of int32
 #  if FLATBUFFERS_LITTLEENDIAN
@@ -3957,11 +4060,11 @@ void FixedLengthArraySpanTest() {
     TEST_EQ(2, mutable_d_a.size());
     TEST_EQ(-1, const_d_a[0]);
     TEST_EQ(2, const_d_a[1]);
-    TEST_ASSERT(mutable_d_a.end() == std::copy(const_d_a.cbegin(),
-                                               const_d_a.cend(),
+    TEST_ASSERT(mutable_d_a.end() == std::copy(const_d_a.begin(),
+                                               const_d_a.end(),
                                                mutable_d_a.begin()));
     TEST_ASSERT(
-        std::equal(const_d_a.cbegin(), const_d_a.cend(), mutable_d_a.cbegin()));
+        std::equal(const_d_a.begin(), const_d_a.end(), mutable_d_a.begin()));
   }
 #  endif
 }
@@ -4324,6 +4427,129 @@ void FlatbuffersIteratorsTest() {
 void FlatbuffersIteratorsTest() {}
 #endif
 
+void PrivateAnnotationsLeaks() {
+  // Simple schemas and a "has optional scalar" sentinal.
+  std::vector<std::string> schemas;
+  std::vector<std::string> failure_schemas;
+
+  // (private) (table/struct)
+  schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC (private) { mana: int; }");
+
+  // (public) (table/struct)
+  schemas.push_back(
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; }");
+
+  // (private) (union) containing (private) (table/struct)
+  schemas.push_back(
+      "table Monster (private) { mana: int; } "
+      "struct ABC (private) { mana: int; } "
+      "union Any (private) { Monster, ABC } ");
+
+  // (public) (union) containing (public) (table/struct)
+  schemas.push_back(
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; }"
+      "union Any { Monster, ABC }");
+
+  // (private) (table/struct/enum)
+  schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC (private) { mana: int; }"
+      "enum Race:byte (private) { None = -1, Human = 0, }");
+
+  // (public) (table/struct/enum)
+  schemas.push_back(
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; }"
+      "enum Race:byte { None = -1, Human = 0, }");
+
+  // (private) (union) containing (private) (table/struct)
+  schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC (private) { mana: int; }"
+      "enum Race:byte (private) { None = -1, Human = 0, }"
+      "union Any (private) { Monster, ABC }");
+
+  // (public) (union) containing (public) (table/struct)
+  schemas.push_back(
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; }"
+      "enum Race:byte { None = -1, Human = 0, }"
+      "union Any { Monster, ABC }");
+
+  // (private) (table), (public struct)
+  schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC { mana: int; }");
+
+  // (private) (table), (public) (struct/enum)
+  schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC { mana: int; }"
+      "enum Race:byte { None = -1, Human = 0, }");
+
+  // (public) (struct) containing (public) (enum)
+  schemas.push_back(
+      "enum Race:byte { None = -1, Human = 0, }"
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; type: Race; }");
+
+  // (public) (union) containing (private) (table) & (public) (struct)
+  failure_schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC { mana: int; }"
+      "union Any { Monster, ABC }");
+
+  // (public) (union) containing (private) (table/struct)
+  failure_schemas.push_back(
+      "table Monster (private) { mana: int; }"
+      "struct ABC (private) { mana: int; }"
+      "enum Race:byte { None = -1, Human = 0, }"
+      "union Any { Monster, ABC }");
+
+  // (public) (table) containing (private) (struct)
+  failure_schemas.push_back(
+      "table Monster { mana: int; ab: ABC; }"
+      "struct ABC (private) { mana: int; }");
+
+  // (public) (struct) containing (private) (enum)
+  failure_schemas.push_back(
+      "enum Race:byte (private) { None = -1, Human = 0, }"
+      "table Monster { mana: int; }"
+      "struct ABC { mana: int; type: Race; }");
+
+  flatbuffers::IDLOptions opts;
+  opts.lang_to_generate = flatbuffers::IDLOptions::Language::kSwift;
+  opts.no_leak_private_annotations = true;
+
+  for (auto schema = schemas.begin(); schema < schemas.end(); schema++) {
+    flatbuffers::Parser parser(opts);
+    TEST_ASSERT(parser.Parse(schema->c_str()));
+  }
+
+  for (auto schema = failure_schemas.begin(); schema < failure_schemas.end();
+       schema++) {
+    flatbuffers::Parser parser(opts);
+    TEST_EQ(false, parser.Parse(schema->c_str()));
+  }
+
+  opts.no_leak_private_annotations = false;
+
+  for (auto schema = schemas.begin(); schema < schemas.end(); schema++) {
+    flatbuffers::Parser parser(opts);
+    TEST_ASSERT(parser.Parse(schema->c_str()));
+  }
+
+  for (auto schema = failure_schemas.begin(); schema < failure_schemas.end();
+       schema++) {
+    flatbuffers::Parser parser(opts);
+    TEST_ASSERT(parser.Parse(schema->c_str()));
+  }
+}
+
 int FlatBufferTests() {
   // clang-format off
 
@@ -4367,6 +4593,8 @@ int FlatBufferTests() {
     LoadVerifyBinaryTest();
     GenerateTableTextTest();
     TestEmbeddedBinarySchema();
+    JsonOptionalTest(false);
+    JsonOptionalTest(true);
   #endif
   // clang-format on
 
@@ -4402,6 +4630,7 @@ int FlatBufferTests() {
   JsonDefaultTest();
   JsonEnumsTest();
   FlexBuffersTest();
+  FlexBuffersReuseBugTest();
   FlexBuffersDeprecatedTest();
   UninitializedVectorTest();
   EqualOperatorTest();
@@ -4425,6 +4654,7 @@ int FlatBufferTests() {
   StructUnionTest();
   WarningsAsErrorsTest();
   NestedVerifierTest();
+  PrivateAnnotationsLeaks();
   return 0;
 }
 

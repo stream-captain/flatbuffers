@@ -164,7 +164,7 @@ struct Type {
         enum_def(_ed),
         fixed_length(_fixed_length) {}
 
-  bool operator==(const Type &o) {
+  bool operator==(const Type &o) const {
     return base_type == o.base_type && element == o.element &&
            struct_def == o.struct_def && enum_def == o.enum_def;
   }
@@ -295,7 +295,7 @@ struct FieldDef : public Definition {
         native_inline(false),
         flexbuffer(false),
         presence(kDefault),
-        nested_flatbuffer(NULL),
+        nested_flatbuffer(nullptr),
         padding(0) {}
 
   Offset<reflection::Field> Serialize(FlatBufferBuilder *builder, uint16_t id,
@@ -577,7 +577,7 @@ struct IDLOptions {
   bool allow_non_utf8;
   bool natural_utf8;
   std::string include_prefix;
-  bool keep_include_path;
+  bool keep_prefix;
   bool binary_schema_comments;
   bool binary_schema_builtins;
   bool binary_schema_gen_embed;
@@ -603,6 +603,7 @@ struct IDLOptions {
   bool json_nested_flexbuffers;
   bool json_nested_legacy_flatbuffers;
   bool ts_flat_file;
+  bool no_leak_private_annotations;
 
   // Possible options for the more general generator below.
   enum Language {
@@ -682,7 +683,7 @@ struct IDLOptions {
         union_value_namespacing(true),
         allow_non_utf8(false),
         natural_utf8(false),
-        keep_include_path(false),
+        keep_prefix(false),
         binary_schema_comments(false),
         binary_schema_builtins(false),
         binary_schema_gen_embed(false),
@@ -702,6 +703,7 @@ struct IDLOptions {
         json_nested_flexbuffers(true),
         json_nested_legacy_flatbuffers(false),
         ts_flat_file(false),
+        no_leak_private_annotations(false),
         mini_reflect(IDLOptions::kNone),
         require_explicit_ids(false),
         rust_serialize(false),
@@ -909,6 +911,11 @@ class Parser : public ParserState {
   // @param opts Options used to parce a schema and generate code.
   static bool SupportsOptionalScalars(const flatbuffers::IDLOptions &opts);
 
+  // Get the set of included files that are directly referenced by the file
+  // being parsed. This does not include files that are transitively included by
+  // others includes.
+  std::vector<std::string> GetIncludedFiles() const;
+
  private:
   class ParseDepthGuard;
 
@@ -993,6 +1000,9 @@ class Parser : public ParserState {
   FLATBUFFERS_CHECKED_ERROR ParseRoot(const char *_source,
                                       const char **include_paths,
                                       const char *source_filename);
+  FLATBUFFERS_CHECKED_ERROR CheckPrivateLeak();
+  FLATBUFFERS_CHECKED_ERROR CheckPrivatelyLeakedFields(
+      const Definition &def, const Definition &value_type);
   FLATBUFFERS_CHECKED_ERROR DoParse(const char *_source,
                                     const char **include_paths,
                                     const char *source_filename,
@@ -1044,10 +1054,10 @@ class Parser : public ParserState {
 
   uint64_t advanced_features_;
 
+  std::string file_being_parsed_;
+
  private:
   const char *source_;
-
-  std::string file_being_parsed_;
 
   std::vector<std::pair<Value, FieldDef *>> field_stack_;
 
