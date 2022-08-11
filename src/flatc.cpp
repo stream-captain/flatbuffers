@@ -221,6 +221,9 @@ const static FlatCOption options[] = {
     "Only generated one typescript file per .fbs file." },
   { "", "annotate", "SCHEMA",
     "Annotate the provided BINARY_FILE with the specified SCHEMA file." },
+  { "", "no-leak-private-annotation", "",
+    "Prevents multiple type of annotations within a Fbs SCHEMA file."
+    "Currently this is required to generate private types in Rust" },
 };
 
 static void AppendTextWrappedString(std::stringstream &ss, std::string &text,
@@ -430,7 +433,7 @@ int FlatCompiler::Compile(int argc, const char **argv) {
         opts.include_prefix = flatbuffers::ConCatPathFileName(
             flatbuffers::PosixPath(argv[argi]), "");
       } else if (arg == "--keep-prefix") {
-        opts.keep_include_path = true;
+        opts.keep_prefix = true;
       } else if (arg == "--strict-json") {
         opts.strict_json = true;
       } else if (arg == "--allow-non-utf8") {
@@ -596,6 +599,8 @@ int FlatCompiler::Compile(int argc, const char **argv) {
         opts.json_nested_legacy_flatbuffers = true;
       } else if (arg == "--ts-flat-files") {
         opts.ts_flat_file = true;
+      } else if (arg == "--no-leak-private-annotation") {
+        opts.no_leak_private_annotations = true;
       } else if (arg == "--annotate") {
         if (++argi >= argc) Error("missing path following: " + arg, true);
         annotate_schema = flatbuffers::PosixPath(argv[argi]);
@@ -848,7 +853,7 @@ int FlatCompiler::Compile(int argc, const char **argv) {
           if (params_.generators[i].generateGRPC != nullptr) {
             if (!params_.generators[i].generateGRPC(*parser.get(), output_path,
                                                     filebase)) {
-              Error(std::string("Unable to generate GRPC interface for") +
+              Error(std::string("Unable to generate GRPC interface for ") +
                     params_.generators[i].lang_name);
             }
           } else {

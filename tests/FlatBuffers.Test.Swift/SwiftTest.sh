@@ -9,6 +9,7 @@ fbc --swift --gen-mutable --grpc --gen-json-emit --gen-object-api -I ${test_dir}
 fbc --swift --gen-json-emit ${test_dir}/optional_scalars.fbs
 fbc --swift --gen-json-emit --gen-object-api ${test_dir}/more_defaults.fbs
 fbc --swift --gen-json-emit --gen-mutable --gen-object-api ${test_dir}/MutatingBool.fbs
+fbc --swift ${test_dir}/vector_has_test.fbs
 cd ${swift_dir}
 
 # Goes into the code generation tests
@@ -20,6 +21,10 @@ cd ..
 cd ${swift_dir}/Sources/SwiftFlatBuffers
 # create better fuzzing test file
 fbc --swift --gen-json-emit fuzzer.fbs
+cd ${swift_dir}
+
+cd ${test_dir}/Flatbuffers.Test.Swift.WASM/Tests/FlatBuffers.Test.Swift.WASMTests
+fbc --swift --gen-mutable --gen-json-emit --gen-object-api -I ${test_dir}/include_test ${test_dir}/monster_test.fbs
 cd ${swift_dir}
 
 swift build --build-tests
